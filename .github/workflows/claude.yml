@@ -104,6 +104,13 @@ jobs:
           COMMENT_PATH: ${{ github.event.comment.path }}
           DIFF_HUNK: ${{ github.event.comment.diff_hunk }}
         run: |
+          # Fail early with a clear message instead of a confusing CLI/API error.
+          for name in ANTHROPIC_AWS_API_KEY ANTHROPIC_AWS_WORKSPACE_ID AWS_REGION; do
+            if [ -z "$(printf '%s' "${!name}" | tr -d '[:space:]')" ]; then
+              echo "::error::$name is not set (secret or repository variable)"
+              exit 1
+            fi
+          done
           location=""
           if [ -n "$COMMENT_PATH" ]; then
             # Review comments point at the PR head, which isn't checked out, so
@@ -133,10 +140,19 @@ jobs:
             > "$RUNNER_TEMP/reply.md"
           test -s "$RUNNER_TEMP/reply.md"
           # Last line of defense: GitHub masks secrets in logs, but not in comment bodies.
-          if grep -qF -e "$ANTHROPIC_AWS_API_KEY" -e "$ANTHROPIC_AWS_WORKSPACE_ID" "$RUNNER_TEMP/reply.md"; then
-            echo "::error::Reply contained a secret; not posting"
-            exit 1
-          fi
+          # Each secret is checked line by line with whitespace stripped. A secret
+          # pasted with a trailing newline would otherwise reach grep -e as an
+          # extra empty pattern, which matches every line (false positive).
+          for secret in "$ANTHROPIC_AWS_API_KEY" "$ANTHROPIC_AWS_WORKSPACE_ID"; do
+            while IFS= read -r part; do
+              part="$(printf '%s' "$part" | tr -d '[:space:]')"
+              [ -n "$part" ] || continue
+              if grep -qF -e "$part" "$RUNNER_TEMP/reply.md"; then
+                echo "::error::Reply contained a secret; not posting"
+                exit 1
+              fi
+            done <<< "$secret"
+          done
 
       - name: Post reply
         if: steps.mention.outputs.ok == 'true'
